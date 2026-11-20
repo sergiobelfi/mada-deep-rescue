@@ -1,1 +1,711 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>MADA DEEP RESCUE</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      background: #040914;
+      color: #fff;
+      font-family: 'Courier New', Courier, monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #game-wrapper {
+      position: relative;
+      width: 100%;
+      max-width: 800px;
+      aspect-ratio: 4 / 3;
+      border: 4px solid #1e3a5f;
+      box-shadow: 0 0 30px rgba(0, 180, 255, 0.3);
+      background: #000;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    #gamepad-badge {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      background: rgba(0, 0, 0, 0.65);
+      border: 1px solid #38bdf8;
+      color: #38bdf8;
+      padding: 4px 10px;
+      font-size: 12px;
+      border-radius: 4px;
+      pointer-events: none;
+    }
+    #gamepad-badge.connected {
+      border-color: #22c55e;
+      color: #22c55e;
+    }
+    /* Controles Touch para Celular */
+    #touch-controls {
+      display: none;
+      width: 100%;
+      max-width: 800px;
+      justify-content: space-between;
+      padding: 12px 20px;
+      margin-top: 8px;
+    }
+    @media (pointer: coarse) {
+      #touch-controls { display: flex; }
+    }
+    .dpad {
+      display: grid;
+      grid-template-columns: repeat(3, 52px);
+      grid-template-rows: repeat(3, 52px);
+      gap: 4px;
+    }
+    .btn-touch {
+      background: rgba(30, 58, 95, 0.8);
+      border: 2px solid #38bdf8;
+      color: #fff;
+      font-size: 20px;
+      font-weight: bold;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .btn-touch:active { background: #38bdf8; color: #000; }
+    .btn-fire {
+      width: 90px;
+      height: 90px;
+      border-radius: 50%;
+      background: rgba(220, 38, 38, 0.8);
+      border: 3px solid #fca5a5;
+      font-size: 16px;
+      align-self: center;
+    }
+    .btn-fire:active { background: #ef4444; }
+  </style>
+</head>
+<body>
+  <div id="game-wrapper">
+    <canvas id="game" width="800" height="600"></canvas>
+    <div id="gamepad-badge">CONTROLE BT: AGUARDANDO</div>
+  </div>
 
+  <div id="touch-controls">
+    <div class="dpad">
+      <div></div>
+      <div class="btn-touch" data-key="ArrowUp">▲</div>
+      <div></div>
+      <div class="btn-touch" data-key="ArrowLeft">◄</div>
+      <div></div>
+      <div class="btn-touch" data-key="ArrowRight">►</div>
+      <div></div>
+      <div class="btn-touch" data-key="ArrowDown">▼</div>
+      <div></div>
+    </div>
+    <div class="btn-touch btn-fire" data-key="Space">TORPEDO</div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const gpBadge = document.getElementById('gamepad-badge');
+
+    // Áudio Retrô Web Audio API
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    let audioCtx = null;
+
+    function playTone(freq, type, duration, vol = 0.12, slide = 0) {
+      if (!audioCtx) audioCtx = new AudioCtx();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      if (slide !== 0) {
+        osc.frequency.exponentialRampToValueAtTime(Math.max(20, freq + slide), audioCtx.currentTime + duration);
+      }
+      gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + duration);
+    }
+
+    const sfx = {
+      shoot: () => playTone(620, 'square', 0.12, 0.1, -400),
+      hit: () => playTone(160, 'sawtooth', 0.2, 0.15, -110),
+      rescue: () => {
+        playTone(523, 'triangle', 0.1, 0.15);
+        setTimeout(() => playTone(784, 'triangle', 0.16, 0.15), 80);
+      },
+      surface: () => {
+        playTone(440, 'sine', 0.12, 0.15);
+        setTimeout(() => playTone(660, 'sine', 0.12, 0.15), 100);
+        setTimeout(() => playTone(880, 'sine', 0.25, 0.15), 200);
+      },
+      die: () => playTone(200, 'sawtooth', 0.6, 0.2, -160)
+    };
+
+    // Estado do Jogo
+    let state = 'START'; // START, PLAYING, GAMEOVER
+    let score = 0;
+    let highScore = Number(localStorage.getItem('mada_deep_hi') || 0);
+    let lives = 3;
+    let level = 1;
+    let oxygen = 100;
+    let rescuedCount = 0;
+    let frame = 0;
+    let flashTimer = 0;
+
+    const SURFACE_Y = 105;
+    const FLOOR_Y = 515;
+
+    const player = {
+      x: 380,
+      y: SURFACE_Y,
+      w: 54,
+      h: 22,
+      dir: 1, // 1 = direita, -1 = esquerda
+      speed: 4.5,
+      cooldown: 0,
+      invuln: 0
+    };
+
+    let torpedoes = [];
+    let enemies = [];
+    let divers = [];
+    let particles = [];
+    let patrolSub = null;
+
+    // Teclado & Touch
+    const keys = {};
+    window.addEventListener('keydown', e => {
+      keys[e.code] = true;
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+        e.preventDefault();
+      }
+      if (state !== 'PLAYING' && (e.code === 'Enter' || e.code === 'Space')) {
+        startGame();
+      }
+    });
+    window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+    document.querySelectorAll('.btn-touch').forEach(btn => {
+      const k = btn.dataset.key;
+      btn.addEventListener('touchstart', e => {
+        e.preventDefault();
+        keys[k] = true;
+        if (state !== 'PLAYING') startGame();
+      });
+      btn.addEventListener('touchend', e => {
+        e.preventDefault();
+        keys[k] = false;
+      });
+    });
+
+    canvas.addEventListener('click', () => {
+      if (state !== 'PLAYING') startGame();
+    });
+
+    // Controle Bluetooth (Gamepad API)
+    let gpStartLatch = false;
+    window.addEventListener('gamepadconnected', e => {
+      gpBadge.textContent = 'CONTROLE BT: CONECTADO';
+      gpBadge.classList.add('connected');
+    });
+    window.addEventListener('gamepaddisconnected', () => {
+      gpBadge.textContent = 'CONTROLE BT: DESCONECTADO';
+      gpBadge.classList.remove('connected');
+    });
+
+    function getGamepadInput() {
+      const gps = navigator.getGamepads ? navigator.getGamepads() : [];
+      const gp = gps[0] || gps[1] || gps[2] || gps[3];
+      if (!gp) return { left: false, right: false, up: false, down: false, fire: false, start: false };
+
+      if (!gpBadge.classList.contains('connected')) {
+        gpBadge.textContent = 'CONTROLE BT: CONECTADO';
+        gpBadge.classList.add('connected');
+      }
+
+      const deadzone = 0.35;
+      const axX = gp.axes[0] || 0;
+      const axY = gp.axes[1] || 0;
+
+      const left = axX < -deadzone || (gp.buttons[14] && gp.buttons[14].pressed);
+      const right = axX > deadzone || (gp.buttons[15] && gp.buttons[15].pressed);
+      const up = axY < -deadzone || (gp.buttons[12] && gp.buttons[12].pressed);
+      const down = axY > deadzone || (gp.buttons[13] && gp.buttons[13].pressed);
+      const fire = [0, 1, 2, 3, 5, 7].some(i => gp.buttons[i] && gp.buttons[i].pressed);
+      const start = [0, 9].some(i => gp.buttons[i] && gp.buttons[i].pressed);
+
+      return { left, right, up, down, fire, start };
+    }
+
+    function startGame() {
+      score = 0;
+      lives = 3;
+      level = 1;
+      resetRound(true);
+      state = 'PLAYING';
+    }
+
+    function resetRound(fullReset = false) {
+      player.x = 380;
+      player.y = SURFACE_Y;
+      player.dir = 1;
+      player.invuln = 90;
+      oxygen = 100;
+      if (fullReset) rescuedCount = 0;
+      torpedoes = [];
+      enemies = [];
+      divers = [];
+      patrolSub = null;
+    }
+
+    function spawnParticles(x, y, color, count = 14) {
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 6,
+          vy: (Math.random() - 0.5) * 6,
+          life: 25 + Math.random() * 15,
+          color
+        });
+      }
+    }
+
+    function spawnEntities() {
+      // Tubarões e submarinos inimigos
+      const maxEnemies = 5 + level;
+      if (enemies.length < maxEnemies && Math.random() < 0.03 + level * 0.005) {
+        const fromLeft = Math.random() < 0.5;
+        const laneY = 145 + Math.floor(Math.random() * 6) * 58;
+        const isSub = Math.random() < 0.35;
+        const speed = (1.8 + Math.random() * 1.6 + level * 0.25) * (fromLeft ? 1 : -1);
+        enemies.push({
+          x: fromLeft ? -50 : 850,
+          y: laneY,
+          w: isSub ? 46 : 40,
+          h: 18,
+          vx: speed,
+          type: isSub ? 'sub' : 'shark'
+        });
+      }
+
+      // Mergulhadores para resgate
+      if (divers.length < 3 && Math.random() < 0.015) {
+        const fromLeft = Math.random() < 0.5;
+        const laneY = 165 + Math.floor(Math.random() * 5) * 62;
+        divers.push({
+          x: fromLeft ? -30 : 830,
+          y: laneY,
+          w: 24,
+          h: 14,
+          vx: (1.1 + Math.random() * 0.7) * (fromLeft ? 1 : -1)
+        });
+      }
+    }
+
+    function hitBox(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function killPlayer() {
+      if (player.invuln > 0) return;
+      sfx.die();
+      spawnParticles(player.x + player.w / 2, player.y + player.h / 2, '#f97316', 28);
+      lives--;
+      if (rescuedCount > 0) rescuedCount--;
+      if (lives <= 0) {
+        if (score > highScore) {
+          highScore = score;
+          localStorage.setItem('mada_deep_hi', highScore);
+        }
+        state = 'GAMEOVER';
+      } else {
+        resetRound(false);
+      }
+    }
+
+    function update() {
+      frame++;
+      const gp = getGamepadInput();
+
+      if (state !== 'PLAYING') {
+        if (gp.start && !gpStartLatch) {
+          gpStartLatch = true;
+          startGame();
+        } else if (!gp.start) {
+          gpStartLatch = false;
+        }
+        return;
+      }
+
+      const moveLeft = keys['ArrowLeft'] || keys['KeyA'] || gp.left;
+      const moveRight = keys['ArrowRight'] || keys['KeyD'] || gp.right;
+      const moveUp = keys['ArrowUp'] || keys['KeyW'] || gp.up;
+      const moveDown = keys['ArrowDown'] || keys['KeyS'] || gp.down;
+      const fire = keys['Space'] || keys['KeyZ'] || keys['KeyJ'] || gp.fire;
+
+      if (moveLeft) { player.x -= player.speed; player.dir = -1; }
+      if (moveRight) { player.x += player.speed; player.dir = 1; }
+      if (moveUp) { player.y -= player.speed * 0.85; }
+      if (moveDown) { player.y += player.speed * 0.85; }
+
+      player.x = Math.max(16, Math.min(canvas.width - player.w - 16, player.x));
+      player.y = Math.max(SURFACE_Y, Math.min(FLOOR_Y - player.h, player.y));
+
+      if (player.invuln > 0) player.invuln--;
+      if (player.cooldown > 0) player.cooldown--;
+      if (flashTimer > 0) flashTimer--;
+
+      // Disparar Torpedo
+      if (fire && player.cooldown === 0) {
+        sfx.shoot();
+        torpedoes.push({
+          x: player.dir === 1 ? player.x + player.w : player.x - 14,
+          y: player.y + 9,
+          w: 16,
+          h: 4,
+          vx: player.dir * 10
+        });
+        player.cooldown = 16;
+      }
+
+      // Oxigênio e Superfície
+      const atSurface = player.y <= SURFACE_Y + 4;
+      if (atSurface) {
+        if (oxygen < 98) {
+          oxygen = Math.min(100, oxygen + 1.8);
+        }
+        // Resgate completo de 6 mergulhadores na superfície!
+        if (rescuedCount >= 6) {
+          sfx.surface();
+          score += 500 * level + Math.floor(oxygen) * 5;
+          rescuedCount = 0;
+          level++;
+          flashTimer = 25;
+          if (level % 2 === 0 && lives < 5) lives++;
+        } else if (rescuedCount > 0 && oxygen > 95 && moveDown) {
+          // Descarrega 1 mergulhador se subir antes dos 6
+          rescuedCount--;
+          score += 100 * level;
+        }
+      } else {
+        oxygen -= (0.065 + level * 0.008);
+        if (oxygen <= 0) {
+          oxygen = 0;
+          killPlayer();
+          return;
+        }
+      }
+
+      // Submarino de patrulha na superfície nos níveis mais altos
+      if (level >= 2 && !patrolSub && Math.random() < 0.006) {
+        const fromLeft = Math.random() < 0.5;
+        patrolSub = {
+          x: fromLeft ? -60 : 860,
+          y: SURFACE_Y - 2,
+          w: 52,
+          h: 20,
+          vx: (2.6 + level * 0.3) * (fromLeft ? 1 : -1)
+        };
+      }
+      if (patrolSub) {
+        patrolSub.x += patrolSub.vx;
+        if (hitBox(player, patrolSub)) killPlayer();
+        if (patrolSub && (patrolSub.x < -100 || patrolSub.x > 900)) patrolSub = null;
+      }
+
+      spawnEntities();
+
+      // Atualizar Torpedos
+      for (let i = torpedoes.length - 1; i >= 0; i--) {
+        const t = torpedoes[i];
+        t.x += t.vx;
+        if (t.x < -30 || t.x > 830) {
+          torpedoes.splice(i, 1);
+          continue;
+        }
+        for (let j = enemies.length - 1; j >= 0; j--) {
+          const en = enemies[j];
+          if (hitBox(t, en)) {
+            sfx.hit();
+            spawnParticles(en.x + en.w / 2, en.y + en.h / 2, en.type === 'sub' ? '#facc15' : '#38bdf8');
+            score += (en.type === 'sub' ? 60 : 40) * level;
+            enemies.splice(j, 1);
+            torpedoes.splice(i, 1);
+            break;
+          }
+        }
+      }
+
+      // Atualizar Inimigos
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const en = enemies[i];
+        en.x += en.vx;
+        if (en.x < -90 || en.x > 890) {
+          enemies.splice(i, 1);
+          continue;
+        }
+        if (hitBox(player, en)) {
+          enemies.splice(i, 1);
+          killPlayer();
+          return;
+        }
+      }
+
+      // Atualizar Mergulhadores
+      for (let i = divers.length - 1; i >= 0; i--) {
+        const d = divers[i];
+        d.x += d.vx;
+        if (d.x < -60 || d.x > 860) {
+          divers.splice(i, 1);
+          continue;
+        }
+        if (hitBox(player, d)) {
+          if (rescuedCount < 6) {
+            sfx.rescue();
+            rescuedCount++;
+            score += 50 * level;
+            spawnParticles(d.x + 12, d.y + 7, '#4ade80', 10);
+            divers.splice(i, 1);
+          }
+        }
+      }
+
+      // Partículas
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    // Desenho estilo Atari 2600
+    function drawSub(x, y, dir, colorMain, colorCabin) {
+      ctx.fillStyle = colorMain;
+      ctx.fillRect(x + 6, y + 6, 42, 12);
+      ctx.fillRect(x + (dir === 1 ? 44 : 0), y + 9, 10, 6);
+      // Hélice traseira
+      const propX = dir === 1 ? x : x + 50;
+      ctx.fillStyle = '#e2e8f0';
+      if (Math.floor(frame / 4) % 2 === 0) {
+        ctx.fillRect(propX, y + 4, 4, 16);
+      } else {
+        ctx.fillRect(propX, y + 9, 4, 6);
+      }
+      // Torre
+      ctx.fillStyle = colorCabin;
+      ctx.fillRect(x + 20, y, 14, 7);
+      ctx.fillRect(x + (dir === 1 ? 28 : 22), y - 4, 4, 5);
+    }
+
+    function drawShark(x, y, vx) {
+      const dir = vx >= 0 ? 1 : -1;
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(x + 6, y + 5, 28, 9);
+      // Barbatana dorsal
+      ctx.fillRect(x + 16, y, 8, 6);
+      // Cauda
+      const tailX = dir === 1 ? x : x + 32;
+      const wag = Math.sin(frame * 0.3) * 3;
+      ctx.fillRect(tailX, y + 2 + wag, 7, 14);
+      // Olho
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(dir === 1 ? x + 28 : x + 9, y + 7, 3, 3);
+    }
+
+    function drawDiver(x, y, vx) {
+      const dir = vx >= 0 ? 1 : -1;
+      const kick = Math.floor(frame / 6) % 2 === 0 ? 2 : -2;
+      ctx.fillStyle = '#fb923c';
+      // Cabeça
+      ctx.fillRect(dir === 1 ? x + 16 : x + 2, y + 2, 6, 6);
+      // Corpo
+      ctx.fillRect(x + 6, y + 5, 12, 5);
+      // Pernas nadando
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(dir === 1 ? x : x + 18, y + 4 + kick, 6, 3);
+      ctx.fillRect(dir === 1 ? x : x + 18, y + 8 - kick, 6, 3);
+    }
+
+    function draw() {
+      // Céu
+      ctx.fillStyle = flashTimer > 0 && flashTimer % 4 < 2 ? '#1e3a8a' : '#0b192c';
+      ctx.fillRect(0, 0, canvas.width, SURFACE_Y + 12);
+
+      // Oceano em degradê estilo faixas Atari
+      const bands = ['#023e8a', '#00509d', '#003f88', '#00296b', '#001d3d'];
+      const bandH = (FLOOR_Y - (SURFACE_Y + 12)) / bands.length;
+      bands.forEach((col, idx) => {
+        ctx.fillStyle = col;
+        ctx.fillRect(0, SURFACE_Y + 12 + idx * bandH, canvas.width, bandH + 1);
+      });
+
+      // Ondas na superfície
+      ctx.fillStyle = '#7dd3fc';
+      for (let x = 0; x < canvas.width; x += 24) {
+        const waveY = SURFACE_Y + 10 + Math.sin((x + frame * 2) * 0.08) * 2;
+        ctx.fillRect(x, waveY, 16, 4);
+      }
+
+      // Fundo do mar
+      ctx.fillStyle = '#ca8a04';
+      ctx.fillRect(0, FLOOR_Y, canvas.width, canvas.height - FLOOR_Y);
+      ctx.fillStyle = '#854d0e';
+      ctx.fillRect(0, FLOOR_Y, canvas.width, 6);
+
+      // HUD Superior
+      ctx.fillStyle = '#facc15';
+      ctx.font = 'bold 24px Courier New';
+      ctx.textAlign = 'left';
+      ctx.fillText(`PONTOS: ${String(score).padStart(6, '0')}`, 20, 34);
+
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = 'bold 16px Courier New';
+      ctx.fillText(`RECORDE: ${String(highScore).padStart(6, '0')}  |  FASE: ${level}`, 20, 60);
+
+      // Vidas (mini submarinos)
+      for (let i = 0; i < lives; i++) {
+        ctx.fillStyle = '#facc15';
+        ctx.fillRect(20 + i * 32, 72, 22, 8);
+        ctx.fillRect(27 + i * 32, 68, 8, 4);
+      }
+
+      if (state === 'PLAYING') {
+        // Mergulhadores
+        divers.forEach(d => drawDiver(d.x, d.y, d.vx));
+
+        // Inimigos
+        enemies.forEach(en => {
+          if (en.type === 'sub') drawSub(en.x, en.y, en.vx >= 0 ? 1 : -1, '#ef4444', '#fca5a5');
+          else drawShark(en.x, en.y, en.vx);
+        });
+
+        // Patrulha na superfície
+        if (patrolSub) {
+          drawSub(patrolSub.x, patrolSub.y, patrolSub.vx >= 0 ? 1 : -1, '#a855f7', '#e9d5ff');
+        }
+
+        // Jogador (pisca se invulnerável)
+        if (player.invuln === 0 || Math.floor(frame / 4) % 2 === 0) {
+          drawSub(player.x, player.y, player.dir, '#facc15', '#fef08a');
+        }
+
+        // Torpedos
+        ctx.fillStyle = '#ffffff';
+        torpedoes.forEach(t => ctx.fillRect(t.x, t.y, t.w, t.h));
+
+        // Partículas
+        particles.forEach(p => {
+          ctx.fillStyle = p.color;
+          ctx.fillRect(p.x, p.y, 4, 4);
+        });
+      }
+
+      // Painel Inferior (Oxigênio + Mergulhadores Resgatados)
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(140, 530, 520, 56);
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(140, 530, 520, 56);
+
+      // Barra de Oxigênio
+      ctx.fillStyle = oxygen < 25 && Math.floor(frame / 8) % 2 === 0 ? '#ef4444' : '#ffffff';
+      ctx.font = 'bold 16px Courier New';
+      ctx.textAlign = 'left';
+      ctx.fillText('OXIGÊNIO', 158, 553);
+
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(255, 539, 385, 16);
+      ctx.fillStyle = oxygen < 25 ? '#ef4444' : '#38bdf8';
+      ctx.fillRect(255, 539, (oxygen / 100) * 385, 16);
+
+      // Ícones dos 6 Mergulhadores a bordo
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = 'bold 14px Courier New';
+      ctx.fillText('RESGATE:', 158, 576);
+      for (let i = 0; i < 6; i++) {
+        ctx.fillStyle = i < rescuedCount ? '#4ade80' : '#334155';
+        ctx.fillRect(255 + i * 34, 563, 22, 12);
+      }
+      if (rescuedCount === 6) {
+        ctx.fillStyle = '#4ade80';
+        ctx.fillText('SUBA À SUPERFÍCIE!', 468, 575);
+      }
+
+      // Tela Inicial com "BOA SORTE MADA" bem no meio da tela
+      if (state === 'START') {
+        ctx.fillStyle = 'rgba(2, 6, 23, 0.78)';
+        ctx.fillRect(60, 140, 680, 320);
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(60, 140, 680, 320);
+
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = 'bold 34px Courier New';
+        ctx.fillText('MADA DEEP RESCUE', 400, 195);
+
+        // Destaque central pedido
+        ctx.fillStyle = '#facc15';
+        ctx.font = 'bold 46px Courier New';
+        ctx.fillText('BOA SORTE MADA', 400, 285);
+
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = '16px Courier New';
+        ctx.fillText('Resgate 6 mergulhadores e suba para renovar o oxigênio', 400, 340);
+
+        if (Math.floor(frame / 25) % 2 === 0) {
+          ctx.fillStyle = '#4ade80';
+          ctx.font = 'bold 20px Courier New';
+          ctx.fillText('APERTE START / ENTER / ESPAÇO OU TOQUE NA TELA', 400, 405);
+        }
+      }
+
+      // Tela de Game Over
+      if (state === 'GAMEOVER') {
+        ctx.fillStyle = 'rgba(2, 6, 23, 0.85)';
+        ctx.fillRect(110, 165, 580, 270);
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(110, 165, 580, 270);
+
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ef4444';
+        ctx.font = 'bold 42px Courier New';
+        ctx.fillText('FIM DE JOGO', 400, 230);
+
+        ctx.fillStyle = '#facc15';
+        ctx.font = 'bold 26px Courier New';
+        ctx.fillText(`PONTUAÇÃO FINAL: ${score}`, 400, 290);
+
+        if (Math.floor(frame / 25) % 2 === 0) {
+          ctx.fillStyle = '#38bdf8';
+          ctx.font = 'bold 18px Courier New';
+          ctx.fillText('APERTE START / ENTER OU CLIQUE PARA JOGAR DE NOVO', 400, 370);
+        }
+      }
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>
