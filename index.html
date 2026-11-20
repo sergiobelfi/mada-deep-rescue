@@ -139,6 +139,7 @@
     }
 
     const sfx = {
+      select: () => playTone(440, 'square', 0.08, 0.08),
       shoot: () => playTone(620, 'square', 0.12, 0.1, -400),
       hit: () => playTone(160, 'sawtooth', 0.2, 0.15, -110),
       rescue: () => {
@@ -150,14 +151,55 @@
         setTimeout(() => playTone(660, 'sine', 0.12, 0.15), 100);
         setTimeout(() => playTone(880, 'sine', 0.25, 0.15), 200);
       },
+      victory: () => {
+        [523, 659, 784, 1046].forEach((f, idx) => {
+          setTimeout(() => playTone(f, 'square', 0.18, 0.15), idx * 140);
+        });
+      },
       die: () => playTone(200, 'sawtooth', 0.6, 0.2, -160)
     };
 
+    // Configurações de Dificuldade e 20 Fases
+    const MAX_LEVELS = 20;
+    const INITIAL_LIVES = 10;
+
+    const DIFFICULTIES = [
+      {
+        name: 'FÁCIL',
+        color: '#4ade80',
+        speedMult: 0.72,
+        spawnRate: 0.022,
+        maxEnemiesBase: 4,
+        oxygenDrain: 0.042,
+        scoreMult: 1
+      },
+      {
+        name: 'NORMAL',
+        color: '#38bdf8',
+        speedMult: 1.0,
+        spawnRate: 0.032,
+        maxEnemiesBase: 5,
+        oxygenDrain: 0.062,
+        scoreMult: 1.5
+      },
+      {
+        name: 'DIFÍCIL',
+        color: '#f87171',
+        speedMult: 1.32,
+        spawnRate: 0.045,
+        maxEnemiesBase: 7,
+        oxygenDrain: 0.088,
+        scoreMult: 2
+      }
+    ];
+
+    let diffIndex = 1; // Começa selecionado em NORMAL (0 = Fácil, 1 = Normal, 2 = Difícil)
+
     // Estado do Jogo
-    let state = 'START'; // START, PLAYING, GAMEOVER
+    let state = 'START'; // START, PLAYING, GAMEOVER, VICTORY
     let score = 0;
     let highScore = Number(localStorage.getItem('mada_deep_hi') || 0);
-    let lives = 3;
+    let lives = INITIAL_LIVES;
     let level = 1;
     let oxygen = 100;
     let rescuedCount = 0;
@@ -172,8 +214,8 @@
       y: SURFACE_Y,
       w: 54,
       h: 22,
-      dir: 1, // 1 = direita, -1 = esquerda
-      speed: 4.5,
+      dir: 1,
+      speed: 4.8,
       cooldown: 0,
       invuln: 0
     };
@@ -184,6 +226,11 @@
     let particles = [];
     let patrolSub = null;
 
+    function changeDifficulty(delta) {
+      diffIndex = (diffIndex + delta + DIFFICULTIES.length) % DIFFICULTIES.length;
+      sfx.select();
+    }
+
     // Teclado & Touch
     const keys = {};
     window.addEventListener('keydown', e => {
@@ -191,8 +238,15 @@
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
         e.preventDefault();
       }
-      if (state !== 'PLAYING' && (e.code === 'Enter' || e.code === 'Space')) {
-        startGame();
+      if (state === 'START') {
+        if (e.code === 'ArrowLeft' || e.code === 'KeyA') changeDifficulty(-1);
+        if (e.code === 'ArrowRight' || e.code === 'KeyD') changeDifficulty(1);
+        if (e.code === 'Enter' || e.code === 'Space') startGame();
+      } else if (state === 'GAMEOVER' || state === 'VICTORY') {
+        if (e.code === 'Enter' || e.code === 'Space') {
+          state = 'START';
+          sfx.select();
+        }
       }
     });
     window.addEventListener('keyup', e => { keys[e.code] = false; });
@@ -202,7 +256,16 @@
       btn.addEventListener('touchstart', e => {
         e.preventDefault();
         keys[k] = true;
-        if (state !== 'PLAYING') startGame();
+        if (state === 'START') {
+          if (k === 'ArrowLeft') changeDifficulty(-1);
+          else if (k === 'ArrowRight') changeDifficulty(1);
+          else if (k === 'Space') startGame();
+        } else if (state === 'GAMEOVER' || state === 'VICTORY') {
+          if (k === 'Space') {
+            state = 'START';
+            sfx.select();
+          }
+        }
       });
       btn.addEventListener('touchend', e => {
         e.preventDefault();
@@ -210,13 +273,33 @@
       });
     });
 
-    canvas.addEventListener('click', () => {
-      if (state !== 'PLAYING') startGame();
+    // Clique na tela (permite clicar nos botões de dificuldade ou iniciar)
+    canvas.addEventListener('click', e => {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const cx = (e.clientX - rect.left) * scaleX;
+      const cy = (e.clientY - rect.top) * scaleY;
+
+      if (state === 'START') {
+        // Verifica clique nos botões de dificuldade (Y entre 315 e 360)
+        if (cy >= 315 && cy <= 360) {
+          if (cx >= 165 && cx <= 305) { diffIndex = 0; sfx.select(); return; }
+          if (cx >= 330 && cx <= 470) { diffIndex = 1; sfx.select(); return; }
+          if (cx >= 495 && cx <= 635) { diffIndex = 2; sfx.select(); return; }
+        }
+        startGame();
+      } else if (state === 'GAMEOVER' || state === 'VICTORY') {
+        state = 'START';
+        sfx.select();
+      }
     });
 
     // Controle Bluetooth (Gamepad API)
     let gpStartLatch = false;
-    window.addEventListener('gamepadconnected', e => {
+    let gpNavLatch = false;
+
+    window.addEventListener('gamepadconnected', () => {
       gpBadge.textContent = 'CONTROLE BT: CONECTADO';
       gpBadge.classList.add('connected');
     });
@@ -251,10 +334,11 @@
 
     function startGame() {
       score = 0;
-      lives = 3;
+      lives = INITIAL_LIVES;
       level = 1;
       resetRound(true);
       state = 'PLAYING';
+      sfx.select();
     }
 
     function resetRound(fullReset = false) {
@@ -283,13 +367,17 @@
     }
 
     function spawnEntities() {
-      // Tubarões e submarinos inimigos
-      const maxEnemies = 5 + level;
-      if (enemies.length < maxEnemies && Math.random() < 0.03 + level * 0.005) {
+      const diff = DIFFICULTIES[diffIndex];
+      const maxEnemies = diff.maxEnemiesBase + Math.floor(level * 0.45);
+      const chance = diff.spawnRate + level * 0.0025;
+
+      if (enemies.length < maxEnemies && Math.random() < chance) {
         const fromLeft = Math.random() < 0.5;
         const laneY = 145 + Math.floor(Math.random() * 6) * 58;
-        const isSub = Math.random() < 0.35;
-        const speed = (1.8 + Math.random() * 1.6 + level * 0.25) * (fromLeft ? 1 : -1);
+        const isSub = Math.random() < (0.25 + level * 0.02);
+        const baseSpeed = 1.6 + Math.random() * 1.4 + level * 0.16;
+        const speed = baseSpeed * diff.speedMult * (fromLeft ? 1 : -1);
+
         enemies.push({
           x: fromLeft ? -50 : 850,
           y: laneY,
@@ -300,8 +388,7 @@
         });
       }
 
-      // Mergulhadores para resgate
-      if (divers.length < 3 && Math.random() < 0.015) {
+      if (divers.length < 3 && Math.random() < 0.018) {
         const fromLeft = Math.random() < 0.5;
         const laneY = 165 + Math.floor(Math.random() * 5) * 62;
         divers.push({
@@ -309,13 +396,20 @@
           y: laneY,
           w: 24,
           h: 14,
-          vx: (1.1 + Math.random() * 0.7) * (fromLeft ? 1 : -1)
+          vx: (1.1 + Math.random() * 0.6) * (fromLeft ? 1 : -1)
         });
       }
     }
 
     function hitBox(a, b) {
       return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function saveHighScore() {
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem('mada_deep_hi', highScore);
+      }
     }
 
     function killPlayer() {
@@ -325,10 +419,7 @@
       lives--;
       if (rescuedCount > 0) rescuedCount--;
       if (lives <= 0) {
-        if (score > highScore) {
-          highScore = score;
-          localStorage.setItem('mada_deep_hi', highScore);
-        }
+        saveHighScore();
         state = 'GAMEOVER';
       } else {
         resetRound(false);
@@ -338,11 +429,26 @@
     function update() {
       frame++;
       const gp = getGamepadInput();
+      const diff = DIFFICULTIES[diffIndex];
 
+      // Navegação de Menu pelo Controle Bluetooth
       if (state !== 'PLAYING') {
+        if (state === 'START') {
+          if ((gp.left || gp.right) && !gpNavLatch) {
+            gpNavLatch = true;
+            changeDifficulty(gp.left ? -1 : 1);
+          } else if (!gp.left && !gp.right) {
+            gpNavLatch = false;
+          }
+        }
+
         if (gp.start && !gpStartLatch) {
           gpStartLatch = true;
-          startGame();
+          if (state === 'START') startGame();
+          else {
+            state = 'START';
+            sfx.select();
+          }
         } else if (!gp.start) {
           gpStartLatch = false;
         }
@@ -375,32 +481,37 @@
           y: player.y + 9,
           w: 16,
           h: 4,
-          vx: player.dir * 10
+          vx: player.dir * 10.5
         });
-        player.cooldown = 16;
+        player.cooldown = 15;
       }
 
-      // Oxigênio e Superfície
+      // Oxigênio e Progressão das 20 Fases
       const atSurface = player.y <= SURFACE_Y + 4;
       if (atSurface) {
         if (oxygen < 98) {
-          oxygen = Math.min(100, oxygen + 1.8);
+          oxygen = Math.min(100, oxygen + 2.0);
         }
-        // Resgate completo de 6 mergulhadores na superfície!
         if (rescuedCount >= 6) {
-          sfx.surface();
-          score += 500 * level + Math.floor(oxygen) * 5;
+          score += Math.floor((500 * level + oxygen * 5) * diff.scoreMult);
           rescuedCount = 0;
+
+          if (level >= MAX_LEVELS) {
+            sfx.victory();
+            saveHighScore();
+            state = 'VICTORY';
+            return;
+          }
+
+          sfx.surface();
           level++;
           flashTimer = 25;
-          if (level % 2 === 0 && lives < 5) lives++;
         } else if (rescuedCount > 0 && oxygen > 95 && moveDown) {
-          // Descarrega 1 mergulhador se subir antes dos 6
           rescuedCount--;
-          score += 100 * level;
+          score += Math.floor(100 * level * diff.scoreMult);
         }
       } else {
-        oxygen -= (0.065 + level * 0.008);
+        oxygen -= (diff.oxygenDrain + level * 0.003);
         if (oxygen <= 0) {
           oxygen = 0;
           killPlayer();
@@ -408,15 +519,15 @@
         }
       }
 
-      // Submarino de patrulha na superfície nos níveis mais altos
-      if (level >= 2 && !patrolSub && Math.random() < 0.006) {
+      // Submarino de patrulha na superfície a partir da fase 3
+      if (level >= 3 && !patrolSub && Math.random() < 0.005) {
         const fromLeft = Math.random() < 0.5;
         patrolSub = {
           x: fromLeft ? -60 : 860,
           y: SURFACE_Y - 2,
           w: 52,
           h: 20,
-          vx: (2.6 + level * 0.3) * (fromLeft ? 1 : -1)
+          vx: (2.2 + level * 0.15) * diff.speedMult * (fromLeft ? 1 : -1)
         };
       }
       if (patrolSub) {
@@ -440,7 +551,7 @@
           if (hitBox(t, en)) {
             sfx.hit();
             spawnParticles(en.x + en.w / 2, en.y + en.h / 2, en.type === 'sub' ? '#facc15' : '#38bdf8');
-            score += (en.type === 'sub' ? 60 : 40) * level;
+            score += Math.floor((en.type === 'sub' ? 60 : 40) * level * diff.scoreMult);
             enemies.splice(j, 1);
             torpedoes.splice(i, 1);
             break;
@@ -475,7 +586,7 @@
           if (rescuedCount < 6) {
             sfx.rescue();
             rescuedCount++;
-            score += 50 * level;
+            score += Math.floor(50 * level * diff.scoreMult);
             spawnParticles(d.x + 12, d.y + 7, '#4ade80', 10);
             divers.splice(i, 1);
           }
@@ -497,7 +608,6 @@
       ctx.fillStyle = colorMain;
       ctx.fillRect(x + 6, y + 6, 42, 12);
       ctx.fillRect(x + (dir === 1 ? 44 : 0), y + 9, 10, 6);
-      // Hélice traseira
       const propX = dir === 1 ? x : x + 50;
       ctx.fillStyle = '#e2e8f0';
       if (Math.floor(frame / 4) % 2 === 0) {
@@ -505,7 +615,6 @@
       } else {
         ctx.fillRect(propX, y + 9, 4, 6);
       }
-      // Torre
       ctx.fillStyle = colorCabin;
       ctx.fillRect(x + 20, y, 14, 7);
       ctx.fillRect(x + (dir === 1 ? 28 : 22), y - 4, 4, 5);
@@ -515,13 +624,10 @@
       const dir = vx >= 0 ? 1 : -1;
       ctx.fillStyle = '#38bdf8';
       ctx.fillRect(x + 6, y + 5, 28, 9);
-      // Barbatana dorsal
       ctx.fillRect(x + 16, y, 8, 6);
-      // Cauda
       const tailX = dir === 1 ? x : x + 32;
       const wag = Math.sin(frame * 0.3) * 3;
       ctx.fillRect(tailX, y + 2 + wag, 7, 14);
-      // Olho
       ctx.fillStyle = '#0f172a';
       ctx.fillRect(dir === 1 ? x + 28 : x + 9, y + 7, 3, 3);
     }
@@ -530,17 +636,16 @@
       const dir = vx >= 0 ? 1 : -1;
       const kick = Math.floor(frame / 6) % 2 === 0 ? 2 : -2;
       ctx.fillStyle = '#fb923c';
-      // Cabeça
       ctx.fillRect(dir === 1 ? x + 16 : x + 2, y + 2, 6, 6);
-      // Corpo
       ctx.fillRect(x + 6, y + 5, 12, 5);
-      // Pernas nadando
       ctx.fillStyle = '#fde047';
       ctx.fillRect(dir === 1 ? x : x + 18, y + 4 + kick, 6, 3);
       ctx.fillRect(dir === 1 ? x : x + 18, y + 8 - kick, 6, 3);
     }
 
     function draw() {
+      const diff = DIFFICULTIES[diffIndex];
+
       // Céu
       ctx.fillStyle = flashTimer > 0 && flashTimer % 4 < 2 ? '#1e3a8a' : '#0b192c';
       ctx.fillRect(0, 0, canvas.width, SURFACE_Y + 12);
@@ -568,46 +673,40 @@
 
       // HUD Superior
       ctx.fillStyle = '#facc15';
-      ctx.font = 'bold 24px Courier New';
+      ctx.font = 'bold 22px Courier New';
       ctx.textAlign = 'left';
-      ctx.fillText(`PONTOS: ${String(score).padStart(6, '0')}`, 20, 34);
+      ctx.fillText(`PONTOS: ${String(score).padStart(6, '0')}`, 20, 32);
 
       ctx.fillStyle = '#94a3b8';
-      ctx.font = 'bold 16px Courier New';
-      ctx.fillText(`RECORDE: ${String(highScore).padStart(6, '0')}  |  FASE: ${level}`, 20, 60);
+      ctx.font = 'bold 15px Courier New';
+      ctx.fillText(`RECORDE: ${String(highScore).padStart(6, '0')} | FASE: ${level}/${MAX_LEVELS} | MODO: ${diff.name}`, 20, 56);
 
-      // Vidas (mini submarinos)
+      // Vidas (até 10 mini submarinos)
       for (let i = 0; i < lives; i++) {
         ctx.fillStyle = '#facc15';
-        ctx.fillRect(20 + i * 32, 72, 22, 8);
-        ctx.fillRect(27 + i * 32, 68, 8, 4);
+        ctx.fillRect(20 + i * 28, 72, 20, 8);
+        ctx.fillRect(26 + i * 28, 68, 7, 4);
       }
 
       if (state === 'PLAYING') {
-        // Mergulhadores
         divers.forEach(d => drawDiver(d.x, d.y, d.vx));
 
-        // Inimigos
         enemies.forEach(en => {
           if (en.type === 'sub') drawSub(en.x, en.y, en.vx >= 0 ? 1 : -1, '#ef4444', '#fca5a5');
           else drawShark(en.x, en.y, en.vx);
         });
 
-        // Patrulha na superfície
         if (patrolSub) {
           drawSub(patrolSub.x, patrolSub.y, patrolSub.vx >= 0 ? 1 : -1, '#a855f7', '#e9d5ff');
         }
 
-        // Jogador (pisca se invulnerável)
         if (player.invuln === 0 || Math.floor(frame / 4) % 2 === 0) {
           drawSub(player.x, player.y, player.dir, '#facc15', '#fef08a');
         }
 
-        // Torpedos
         ctx.fillStyle = '#ffffff';
         torpedoes.forEach(t => ctx.fillRect(t.x, t.y, t.w, t.h));
 
-        // Partículas
         particles.forEach(p => {
           ctx.fillStyle = p.color;
           ctx.fillRect(p.x, p.y, 4, 4);
@@ -621,7 +720,6 @@
       ctx.lineWidth = 2;
       ctx.strokeRect(140, 530, 520, 56);
 
-      // Barra de Oxigênio
       ctx.fillStyle = oxygen < 25 && Math.floor(frame / 8) % 2 === 0 ? '#ef4444' : '#ffffff';
       ctx.font = 'bold 16px Courier New';
       ctx.textAlign = 'left';
@@ -632,7 +730,6 @@
       ctx.fillStyle = oxygen < 25 ? '#ef4444' : '#38bdf8';
       ctx.fillRect(255, 539, (oxygen / 100) * 385, 16);
 
-      // Ícones dos 6 Mergulhadores a bordo
       ctx.fillStyle = '#94a3b8';
       ctx.font = 'bold 14px Courier New';
       ctx.fillText('RESGATE:', 158, 576);
@@ -645,32 +742,79 @@
         ctx.fillText('SUBA À SUPERFÍCIE!', 468, 575);
       }
 
-      // Tela Inicial com "BOA SORTE MADA" bem no meio da tela
+      // Tela Inicial com "BOA SORTE MADA" e Seletor de Dificuldade
       if (state === 'START') {
-        ctx.fillStyle = 'rgba(2, 6, 23, 0.78)';
-        ctx.fillRect(60, 140, 680, 320);
+        ctx.fillStyle = 'rgba(2, 6, 23, 0.84)';
+        ctx.fillRect(50, 120, 700, 360);
         ctx.strokeStyle = '#facc15';
         ctx.lineWidth = 4;
-        ctx.strokeRect(60, 140, 680, 320);
+        ctx.strokeRect(50, 120, 700, 360);
 
         ctx.textAlign = 'center';
         ctx.fillStyle = '#38bdf8';
-        ctx.font = 'bold 34px Courier New';
-        ctx.fillText('MADA DEEP RESCUE', 400, 195);
+        ctx.font = 'bold 32px Courier New';
+        ctx.fillText('MADA DEEP RESCUE', 400, 170);
 
         // Destaque central pedido
         ctx.fillStyle = '#facc15';
         ctx.font = 'bold 46px Courier New';
-        ctx.fillText('BOA SORTE MADA', 400, 285);
+        ctx.fillText('BOA SORTE MADA', 400, 245);
 
-        ctx.fillStyle = '#e2e8f0';
-        ctx.font = '16px Courier New';
-        ctx.fillText('Resgate 6 mergulhadores e suba para renovar o oxigênio', 400, 340);
+        ctx.fillStyle = '#cbd5e1';
+        ctx.font = '15px Courier New';
+        ctx.fillText('20 FASES • 10 VIDAS • USE ◄ ► PARA ESCOLHER O MODO:', 400, 295);
+
+        // Botões de Dificuldade
+        DIFFICULTIES.forEach((d, idx) => {
+          const bx = 165 + idx * 165;
+          const by = 315;
+          const bw = 140;
+          const bh = 44;
+          const selected = idx === diffIndex;
+
+          ctx.fillStyle = selected ? d.color : '#1e293b';
+          ctx.fillRect(bx, by, bw, bh);
+          ctx.strokeStyle = selected ? '#ffffff' : '#475569';
+          ctx.lineWidth = selected ? 3 : 1;
+          ctx.strokeRect(bx, by, bw, bh);
+
+          ctx.fillStyle = selected ? '#020617' : '#94a3b8';
+          ctx.font = 'bold 20px Courier New';
+          ctx.fillText(d.name, bx + bw / 2, by + 29);
+        });
 
         if (Math.floor(frame / 25) % 2 === 0) {
           ctx.fillStyle = '#4ade80';
-          ctx.font = 'bold 20px Courier New';
-          ctx.fillText('APERTE START / ENTER / ESPAÇO OU TOQUE NA TELA', 400, 405);
+          ctx.font = 'bold 19px Courier New';
+          ctx.fillText('APERTE START / ENTER / ESPAÇO OU TOQUE PARA JOGAR', 400, 425);
+        }
+      }
+
+      // Tela de Vitória (Zerar as 20 fases)
+      if (state === 'VICTORY') {
+        ctx.fillStyle = 'rgba(2, 6, 23, 0.88)';
+        ctx.fillRect(90, 150, 620, 300);
+        ctx.strokeStyle = '#4ade80';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(90, 150, 620, 300);
+
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#4ade80';
+        ctx.font = 'bold 38px Courier New';
+        ctx.fillText('MISSÃO CUMPRIDA, MADA!', 400, 215);
+
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = 'bold 20px Courier New';
+        ctx.fillText(`TODAS AS 20 FASES CONCLUÍDAS NO MODO ${diff.name}!`, 400, 265);
+
+        ctx.fillStyle = '#facc15';
+        ctx.font = 'bold 28px Courier New';
+        ctx.fillText(`PONTUAÇÃO FINAL: ${score}`, 400, 320);
+
+        if (Math.floor(frame / 25) % 2 === 0) {
+          ctx.fillStyle = '#38bdf8';
+          ctx.font = 'bold 18px Courier New';
+          ctx.fillText('APERTE START / ENTER PARA VOLTAR AO MENU', 400, 395);
         }
       }
 
@@ -685,16 +829,20 @@
         ctx.textAlign = 'center';
         ctx.fillStyle = '#ef4444';
         ctx.font = 'bold 42px Courier New';
-        ctx.fillText('FIM DE JOGO', 400, 230);
+        ctx.fillText('FIM DE JOGO', 400, 225);
+
+        ctx.fillStyle = '#cbd5e1';
+        ctx.font = 'bold 18px Courier New';
+        ctx.fillText(`CHEGOU ATÉ A FASE ${level} DE ${MAX_LEVELS} (${diff.name})`, 400, 265);
 
         ctx.fillStyle = '#facc15';
         ctx.font = 'bold 26px Courier New';
-        ctx.fillText(`PONTUAÇÃO FINAL: ${score}`, 400, 290);
+        ctx.fillText(`PONTUAÇÃO FINAL: ${score}`, 400, 310);
 
         if (Math.floor(frame / 25) % 2 === 0) {
           ctx.fillStyle = '#38bdf8';
           ctx.font = 'bold 18px Courier New';
-          ctx.fillText('APERTE START / ENTER OU CLIQUE PARA JOGAR DE NOVO', 400, 370);
+          ctx.fillText('APERTE START / ENTER PARA ESCOLHER O MODO', 400, 385);
         }
       }
     }
