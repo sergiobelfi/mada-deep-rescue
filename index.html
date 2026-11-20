@@ -167,33 +167,33 @@
       {
         name: 'FÁCIL',
         color: '#4ade80',
-        speedMult: 0.72,
-        spawnRate: 0.022,
-        maxEnemiesBase: 4,
-        oxygenDrain: 0.042,
+        speedMult: 0.65,
+        spawnRate: 0.016,
+        maxEnemiesBase: 3,
+        oxygenDrain: 0.032,
         scoreMult: 1
       },
       {
         name: 'NORMAL',
         color: '#38bdf8',
-        speedMult: 1.0,
-        spawnRate: 0.032,
-        maxEnemiesBase: 5,
-        oxygenDrain: 0.062,
+        speedMult: 0.85,
+        spawnRate: 0.022,
+        maxEnemiesBase: 4,
+        oxygenDrain: 0.045,
         scoreMult: 1.5
       },
       {
         name: 'DIFÍCIL',
         color: '#f87171',
-        speedMult: 1.32,
-        spawnRate: 0.045,
-        maxEnemiesBase: 7,
-        oxygenDrain: 0.088,
+        speedMult: 1.12,
+        spawnRate: 0.032,
+        maxEnemiesBase: 5,
+        oxygenDrain: 0.065,
         scoreMult: 2
       }
     ];
 
-    let diffIndex = 1; // Começa selecionado em NORMAL (0 = Fácil, 1 = Normal, 2 = Difícil)
+    let diffIndex = 1; // 0 = Fácil, 1 = Normal, 2 = Difícil
 
     // Estado do Jogo
     let state = 'START'; // START, PLAYING, GAMEOVER, VICTORY
@@ -273,7 +273,6 @@
       });
     });
 
-    // Clique na tela (permite clicar nos botões de dificuldade ou iniciar)
     canvas.addEventListener('click', e => {
       const rect = canvas.getBoundingClientRect();
       const scaleX = canvas.width / rect.width;
@@ -282,7 +281,6 @@
       const cy = (e.clientY - rect.top) * scaleY;
 
       if (state === 'START') {
-        // Verifica clique nos botões de dificuldade (Y entre 315 e 360)
         if (cy >= 315 && cy <= 360) {
           if (cx >= 165 && cx <= 305) { diffIndex = 0; sfx.select(); return; }
           if (cx >= 330 && cx <= 470) { diffIndex = 1; sfx.select(); return; }
@@ -368,14 +366,26 @@
 
     function spawnEntities() {
       const diff = DIFFICULTIES[diffIndex];
-      const maxEnemies = diff.maxEnemiesBase + Math.floor(level * 0.45);
-      const chance = diff.spawnRate + level * 0.0025;
+
+      // Curva de velocidade: bem lenta nas fases 1 a 15, acelerando nas fases 16 a 20
+      const isLateGame = level > 15;
+      const levelSpeedBonus = isLateGame
+        ? (14 * 0.045) + ((level - 15) * 0.24)
+        : (level - 1) * 0.045;
+
+      const maxEnemies = isLateGame
+        ? diff.maxEnemiesBase + 3 + (level - 15)
+        : diff.maxEnemiesBase + Math.floor((level - 1) / 5);
+
+      const chance = isLateGame
+        ? diff.spawnRate + 0.015 + (level - 15) * 0.004
+        : diff.spawnRate + (level - 1) * 0.0008;
 
       if (enemies.length < maxEnemies && Math.random() < chance) {
         const fromLeft = Math.random() < 0.5;
         const laneY = 145 + Math.floor(Math.random() * 6) * 58;
-        const isSub = Math.random() < (0.25 + level * 0.02);
-        const baseSpeed = 1.6 + Math.random() * 1.4 + level * 0.16;
+        const isSub = Math.random() < (0.20 + level * 0.015);
+        const baseSpeed = 0.95 + Math.random() * 0.65 + levelSpeedBonus;
         const speed = baseSpeed * diff.speedMult * (fromLeft ? 1 : -1);
 
         enemies.push({
@@ -388,7 +398,7 @@
         });
       }
 
-      if (divers.length < 3 && Math.random() < 0.018) {
+      if (divers.length < 3 && Math.random() < 0.022) {
         const fromLeft = Math.random() < 0.5;
         const laneY = 165 + Math.floor(Math.random() * 5) * 62;
         divers.push({
@@ -396,7 +406,7 @@
           y: laneY,
           w: 24,
           h: 14,
-          vx: (1.1 + Math.random() * 0.6) * (fromLeft ? 1 : -1)
+          vx: (0.9 + Math.random() * 0.45) * (fromLeft ? 1 : -1)
         });
       }
     }
@@ -490,7 +500,7 @@
       const atSurface = player.y <= SURFACE_Y + 4;
       if (atSurface) {
         if (oxygen < 98) {
-          oxygen = Math.min(100, oxygen + 2.0);
+          oxygen = Math.min(100, oxygen + 2.2);
         }
         if (rescuedCount >= 6) {
           score += Math.floor((500 * level + oxygen * 5) * diff.scoreMult);
@@ -511,7 +521,8 @@
           score += Math.floor(100 * level * diff.scoreMult);
         }
       } else {
-        oxygen -= (diff.oxygenDrain + level * 0.003);
+        const extraDrain = level > 15 ? (level - 15) * 0.005 : (level - 1) * 0.001;
+        oxygen -= (diff.oxygenDrain + extraDrain);
         if (oxygen <= 0) {
           oxygen = 0;
           killPlayer();
@@ -519,15 +530,16 @@
         }
       }
 
-      // Submarino de patrulha na superfície a partir da fase 3
-      if (level >= 3 && !patrolSub && Math.random() < 0.005) {
+      // Submarino de patrulha na superfície somente a partir da fase 10 (bem lento até a 15)
+      if (level >= 10 && !patrolSub && Math.random() < 0.004) {
         const fromLeft = Math.random() < 0.5;
+        const patrolSpeed = level <= 15 ? 1.4 : (2.2 + (level - 15) * 0.2);
         patrolSub = {
           x: fromLeft ? -60 : 860,
           y: SURFACE_Y - 2,
           w: 52,
           h: 20,
-          vx: (2.2 + level * 0.15) * diff.speedMult * (fromLeft ? 1 : -1)
+          vx: patrolSpeed * diff.speedMult * (fromLeft ? 1 : -1)
         };
       }
       if (patrolSub) {
